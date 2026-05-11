@@ -1,0 +1,33 @@
+# Secrets and local environments
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+pytest-cache-files-*/
+.mypy_cache/
+.ruff_cache/
+
+# Generated extraction outputs
+combined_agent_output/
+combined_output/
+metadata.csv
+PU_*/agent_output/
+PU_*/extracted/
+
+# Local paper corpus files are usually copyrighted or too large for GitHub.
+PU_*/
+PU_*/*.pdf
+test/
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

@@ -1,0 +1,22 @@
+# Root folder that contains paper subfolders.
+# Each paper folder should contain PDFs and optionally molecule.txt.
+root_dir: "."
+
+# Fill this with local paper folders before running, or pass --folders in the CLI.
+folders: []
+
+# PDF rendering
+render_dpi: 400
+max_image_dim: 1600
+
+# API settings
+retries: 3
+backoff_base: 2
+api_timeout: 180
+
+# Extraction settings
+min_curve_points: 50
+min_confidence: "low"
+
+# Output
+output_dir_name: "agent_output"
