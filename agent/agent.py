@@ -11,7 +11,7 @@ from .extractors.text_extractor import prepare_context
 from .extractors.literature_extractor import LiteratureExtractor
 from .extractors.curve_extractor import CurveExtractor
 from .extractors.mechanical_extractor import MechanicalExtractor
-from .output.schemas import ExtractionResult
+from .output.schemas import ExtractionResult, LiteratureInfo
 from .output.writer import write_results
 from .output.report import generate_report
 
@@ -64,7 +64,7 @@ class PUExtractionAgent:
 
         # Merge results
         result = ExtractionResult(
-            literature=lit_result.get("literature"),
+            literature=lit_result.get("literature") or LiteratureInfo(),
             samples=lit_result.get("samples", []),
             mechanical=mechanical,
             curves=curves,

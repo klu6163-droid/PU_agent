@@ -96,10 +96,12 @@ class CurveExtractor(BaseExtractor):
         """Use text-derived figure index to select candidate figures."""
         selected: list[dict] = []
         for fig in context.figure_index:
-            for ptype in fig.get("plot_types", []):
+            plot_types = fig.get("plot_types", [])
+            for ptype in plot_types:
                 normalized = "xrd" if ptype == "waxs" else ptype
                 if normalized in TARGET_TYPES:
                     selected.append({**fig, "_target_type": normalized})
+
         return selected
 
     def _read_figure_metadata(self, image: np.ndarray, fig: dict, plot_type: str) -> FigureMetadata:
@@ -128,7 +130,7 @@ class CurveExtractor(BaseExtractor):
 
         return FigureMetadata(
             figure_id=str(parsed.get("figure_id") or fig.get("figure_id", "Figure")),
-            plot_type=str(parsed.get("plot_type") or plot_type),
+            plot_type=_normalize_plot_type(str(parsed.get("plot_type") or plot_type)),
             caption=str(parsed.get("caption") or fig.get("caption", "")),
             x_label=str(parsed.get("x_axis", {}).get("label", "")) if isinstance(parsed.get("x_axis"), dict) else "",
             y_label=str(parsed.get("y_axis", {}).get("label", "")) if isinstance(parsed.get("y_axis"), dict) else "",
@@ -167,3 +169,9 @@ class CurveExtractor(BaseExtractor):
         except Exception as exc:
             logger.warning("Failed to render %s p%s: %s", pdf_path.name, page_num, exc)
             return None
+
+
+def _normalize_plot_type(plot_type: str) -> str:
+    normalized = plot_type.strip().lower().replace("-", "_")
+    aliases = {"waxs": "xrd", "waxd": "xrd", "x_ray_diffraction": "xrd"}
+    return aliases.get(normalized, normalized)

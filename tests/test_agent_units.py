@@ -1,12 +1,17 @@
 from pathlib import Path
 
 from agent.config import load_config
+from agent.extractors.base import ExtractionContext
+from agent.extractors.curve_extractor import CurveExtractor
 from agent.extractors.curve_digitizer import fit_axis_model, map_pixel_to_value
+from agent.extractors.figure_detector import detect_plot_types
+from agent.extractors.literature_extractor import _normalize_authors
 from agent.llm_client import LLMClient
 from agent.output.schemas import CurveData, ExtractionResult
 from agent.output.writer import write_results
 from agent.prompts.curve_digitize import build_curve_metadata_prompt
 from agent.utils_pdf import classify_pdf
+from convert_to_test_format import parse_agent_curve_filename
 
 
 def test_parse_json_response_from_markdown_block():
@@ -160,3 +165,39 @@ def test_curve_csv_contains_point_provenance(tmp_path: Path):
     csv_text = next((output_dir / "curves").glob("*.csv")).read_text(encoding="utf-8")
     assert "source_pdf,source_page,source_figure" in csv_text
     assert "paper.pdf,3,Figure 3a" in csv_text
+
+
+def test_unknown_figures_are_not_forced_to_stress_strain():
+    context = ExtractionContext(
+        folder=Path("."),
+        figure_index=[
+            {
+                "plot_types": ["unknown"],
+                "sample_labels": ["PU_001"],
+                "figure_id": "Figure 1",
+                "pdf_type": "main",
+                "page_number": 1,
+            }
+        ],
+    )
+
+    selected = CurveExtractor._select_target_figures(None, context)
+
+    assert selected == []
+
+
+def test_agent_curve_filename_preserves_underscored_sample_id():
+    sample_id, curve_type = parse_agent_curve_filename("PU_001_A_stress_strain_Figure_3a_p2_curve_1.csv")
+
+    assert sample_id == "PU_001_A"
+    assert curve_type == "stress_strain"
+
+
+def test_short_thermal_tokens_do_not_trigger_dsc_substrings():
+    assert detect_plot_types("A schematic drawing of a polyurethane network") == ["unknown"]
+    assert "dsc" in detect_plot_types("DSC trace shows Tg and Tm transitions")
+
+
+def test_normalize_authors_accepts_string_or_list():
+    assert _normalize_authors("A. Li, B. Wang; C. Zhang") == ["A. Li", "B. Wang", "C. Zhang"]
+    assert _normalize_authors(["A. Li", "", None]) == ["A. Li"]

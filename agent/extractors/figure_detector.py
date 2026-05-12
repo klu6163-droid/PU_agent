@@ -11,23 +11,33 @@ PLOT_TYPE_KEYWORDS = {
     "stress_strain": [
         "stress", "strain", "tensile", "engineering stress", "true stress",
         "elongation", "stress-strain", "loading", "unloading",
+        "toughness", "fracture", "modulus", "mpa", "strength",
+        "stretching", "tensile test", "mechanical properties",
+        "elongation at break", "young's modulus", "yield",
     ],
     "ftir": [
         "ftir", "infrared", "ir spectrum", "wavenumber", "transmittance",
         "absorbance", "ft-ir", "fourier transform infrared",
+        "ir spectra", "ftir spectra", "cm-1", "cm⁻¹",
+        "hydrogen bond", "h-bond", "carbonyl", "nh stretching",
     ],
     "saxs": [
         "saxs", "small angle", "small-angle", "scattering intensity",
         "nm^-1", "nm-1", "q (nm", "x-ray scattering",
+        "small-angle x-ray", "scattering curve", "scattering pattern",
+        "phase separation", "domain size", "long period",
     ],
     "waxs": [
         "waxs", "wide angle", "wide-angle", "2theta", "2 theta",
-        "xrd", "diffraction",
+        "xrd", "diffraction", "crystallinity", "crystallite",
+        "wide-angle x-ray", "powder diffraction",
     ],
     "dsc": [
         "dsc", "differential scanning", "heat flow", "thermal analysis",
         "glass transition", "melting", "crystallization", "dma",
         "dynamic mechanical", "storage modulus", "loss modulus", "tan delta",
+        "enthalpy", "thermogram", "thermal transition",
+        "dsc curve", "dsc analysis",
     ],
     "tem": ["tem ", "tem image", "transmission electron", "microscopy", "morphology"],
     "afm": ["afm", "atomic force", "phase image"],
@@ -43,6 +53,8 @@ def detect_plot_types(caption: str) -> list[str]:
             if kw in caption_lower:
                 detected.append(ptype)
                 break
+    if re.search(r"\bT[gmc]\b", caption):
+        detected.append("dsc")
     return detected if detected else ["unknown"]
 
 

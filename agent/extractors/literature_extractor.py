@@ -16,6 +16,17 @@ def _safe_float(value) -> float | None:
     """Convert value to float, handling strings like '1:1', 'N/A', etc."""
     if value is None:
         return None
+
+
+def _normalize_authors(value) -> list[str]:
+    """Normalize LLM author output to a list of strings."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(author).strip() for author in value if author is not None and str(author).strip()]
+    if isinstance(value, str):
+        return [part.strip() for part in re.split(r";|,", value) if part.strip()]
+    return []
     if isinstance(value, (int, float)):
         return float(value)
     s = str(value).strip()
@@ -77,14 +88,21 @@ class LiteratureExtractor(BaseExtractor):
             logger.warning("  LLM extraction failed, falling back to regex")
             return self._fallback_extract(context)
 
+        # Handle case where LLM returns a list instead of dict
+        if isinstance(parsed, list):
+            parsed = parsed[0] if parsed and isinstance(parsed[0], dict) else {}
+            if not parsed:
+                logger.warning("  LLM returned empty list, falling back to regex")
+                return self._fallback_extract(context)
+
         # Parse literature info
         lit_data = parsed.get("literature", {})
         literature = LiteratureInfo(
-            title=lit_data.get("title", ""),
-            authors=lit_data.get("authors", []),
-            journal=lit_data.get("journal", ""),
+            title=str(lit_data.get("title") or ""),
+            authors=_normalize_authors(lit_data.get("authors")),
+            journal=str(lit_data.get("journal") or ""),
             year=lit_data.get("year"),
-            doi=lit_data.get("doi", ""),
+            doi=str(lit_data.get("doi") or ""),
             article_id=context.folder_name,
             pdf_filename=context.main_pdf.name if context.main_pdf else "",
         )
