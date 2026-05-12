@@ -61,12 +61,34 @@ def _write_json(path: Path, data):
 
 
 def _write_curve_csv(path: Path, curve):
-    """Write curve data to CSV."""
+    """Write curve data to CSV with per-point provenance."""
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["x", "y"])
+        writer.writerow([
+            "x",
+            "y",
+            "source_pdf",
+            "source_page",
+            "source_figure",
+            "caption",
+            "extraction_method",
+            "confidence",
+            "x_scale",
+            "y_scale",
+        ])
         for x, y in zip(curve.x, curve.y):
-            writer.writerow([x, y])
+            writer.writerow([
+                x,
+                y,
+                curve.source_pdf,
+                curve.source_page,
+                curve.source_figure,
+                curve.caption,
+                curve.extraction_method,
+                curve.confidence,
+                curve.x_scale,
+                curve.y_scale,
+            ])
 
 
 def _safe_filename(name: str) -> str:

@@ -64,6 +64,15 @@ class CurveData(BaseModel):
     source_pdf: str = ""
     confidence: str = "medium"
     label: str = ""  # curve label within the figure
+    caption: str = ""
+    extraction_method: str = "image_digitization"
+    x_scale: str = "linear"
+    y_scale: str = "linear"
+    calibration: dict = Field(default_factory=dict)
+    tick_marks: list[dict] = Field(default_factory=list)
+    validation: dict = Field(default_factory=dict)
+    review_notes: list[str] = Field(default_factory=list)
+    artifact_paths: dict = Field(default_factory=dict)
 
 
 class Evidence(BaseModel):

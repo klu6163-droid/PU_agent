@@ -1,74 +1,77 @@
-"""Prompts for curve digitization from plot images."""
+"""Prompts for LLM-assisted figure metadata reading.
 
-SYSTEM_PROMPT = """You are an expert at reading scientific plots and extracting numerical data.
-Digitize curves from plot images and return precise data points.
-Always output valid JSON."""
+The LLM must not provide final x-y curve data. Numerical curves are extracted
+by vector/image algorithms in agent.extractors.curve_digitizer.
+"""
+
+SYSTEM_PROMPT = """You are an expert at identifying scientific plot metadata.
+You may locate figures, read captions, axes, units, legends, and curve labels.
+Do not digitize curves and do not output x-y data points. Always output valid JSON."""
 
 
-def build_curve_prompt(
+def build_curve_metadata_prompt(
     plot_type: str,
     figure_caption: str,
     sample_labels: list[str],
-    min_points: int = 100,
 ) -> str:
-    """Build prompt for digitizing a specific plot type."""
-    type_instructions = {
-        "stress_strain": f"""This is a stress-strain curve for polyurethane elastomers.
-- x-axis: strain (typically 0 to 500% or as fraction 0 to 5)
-- y-axis: stress in MPa
-- Extract all curves visible in the figure
-- Include loading and unloading curves if present
-- Extract at least {min_points} points for each primary curve when the image allows it""",
-        "ftir": f"""This is an FTIR infrared spectrum.
-- x-axis: wavenumber in cm^-1 (typically 4000 to 400, decreasing left to right)
-- y-axis: absorbance or transmittance
-- Extract the full spectrum with at least {min_points} points""",
-        "saxs": f"""This is a SAXS (Small Angle X-ray Scattering) curve.
-- x-axis: q in nm^-1 (typically 0.01 to 5)
-- y-axis: intensity (often log scale)
-- Extract the full curve with at least {min_points} points""",
-        "waxs": f"""This is a WAXS (Wide Angle X-ray Scattering) curve.
-- x-axis: 2 theta in degrees (typically 5 to 40) or q in nm^-1
-- y-axis: intensity
-- Extract the full curve with at least {min_points} points""",
-        "dsc": f"""This is a DSC (Differential Scanning Calorimetry) curve.
-- x-axis: temperature in degrees C (typically -100 to 250)
-- y-axis: heat flow in mW/g or W/g
-- Extract the full curve with at least {min_points} points""",
-    }
-
-    type_hint = type_instructions.get(plot_type, f"Extract all visible data from this {plot_type} plot.")
+    """Build a prompt that asks for metadata only, not curve points."""
     labels_str = ", ".join(sample_labels) if sample_labels else "unknown"
+    return f"""Inspect this scientific plot page and return metadata only.
 
-    return f"""Digitize all curves from this scientific plot.
+## Target plot type
+{plot_type}
 
-{type_hint}
+## Text-derived caption
+{figure_caption}
 
-## Known sample/curve labels: {labels_str}
-## Figure caption: {figure_caption}
+## Known sample names
+{labels_str}
 
-## Instructions:
-1. Read the axis scales carefully from the image
-2. Extract {min_points} data points per curve when possible; if there are many curves, 30-50 points each is acceptable
-3. For each curve, provide the curve name/label as it appears in the legend
-4. Ensure data points are in order (sorted by x)
-5. Do not include grid lines or axis labels as data points
-6. Keep the total response concise; prioritize accurate axes and representative points over excessive points
+## Allowed tasks
+1. Decide whether the page contains the target figure.
+2. Identify plot type, figure number/panel, and caption.
+3. Read x/y axis names and units.
+4. Associate legend entries, sample names, curve labels, marker styles, and line styles.
+5. Note visible tick labels or axis min/max hints if readable.
+6. Summarize relevant nearby text printed in the figure.
 
-## Output JSON format:
+## Forbidden tasks
+- Do not output curve x-y data.
+- Do not estimate final numerical data points.
+- Do not create any field containing digitized point arrays.
+
+## Output JSON schema
 {{
-  "x_label": "strain",
-  "y_label": "stress",
-  "x_unit": "%",
-  "y_unit": "MPa",
-  "curves": [
-    {{
-      "name": "Sample-1",
-      "data": [
-        {{"x": 0.0, "y": 0.0}},
-        {{"x": 10.0, "y": 1.5}}
-      ]
-    }}
-  ]
+  "contains_target": true,
+  "figure_id": "Figure 3a",
+  "plot_type": "{plot_type}",
+  "caption": "caption text",
+  "x_axis": {{
+    "label": "strain",
+    "unit": "%",
+    "min": 0,
+    "max": 500,
+    "tick_labels": ["0", "100", "200"],
+    "direction_hint": "increasing"
+  }},
+  "y_axis": {{
+    "label": "stress",
+    "unit": "MPa",
+    "min": 0,
+    "max": 50,
+    "tick_labels": ["0", "10", "20"],
+    "direction_hint": "increasing"
+  }},
+  "curve_labels": ["Sample A", "Sample B"],
+  "legend": [
+    {{"label": "Sample A", "color": "red", "marker": "circle", "line_style": "solid"}}
+  ],
+  "text_context": "short description"
 }}
 """
+
+
+def build_curve_prompt(*args, **kwargs) -> str:
+    """Compatibility wrapper; returns metadata-only prompt."""
+    kwargs.pop("min_points", None)
+    return build_curve_metadata_prompt(*args, **kwargs)

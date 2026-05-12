@@ -1,25 +1,25 @@
-"""Curve digitization via multimodal LLM."""
+"""Curve extraction using LLM-assisted localization and image digitization."""
 
 from __future__ import annotations
 
 import base64
 import logging
-import re
 from pathlib import Path
 
 import numpy as np
 
 from .base import BaseExtractor, ExtractionContext
+from .curve_digitizer import FigureMetadata, digitize_plot_image
 from ..output.schemas import CurveData
-from ..prompts.curve_digitize import SYSTEM_PROMPT, build_curve_prompt
+from ..prompts.curve_digitize import SYSTEM_PROMPT, build_curve_metadata_prompt
 
 logger = logging.getLogger(__name__)
 
-TARGET_TYPES = {"stress_strain", "ftir", "saxs", "waxs", "dsc"}
+TARGET_TYPES = {"stress_strain", "ftir", "saxs", "waxs", "xrd", "dsc"}
 
 
 def _image_to_base64(image: np.ndarray, max_dim: int = 1600) -> str:
-    """Convert numpy image to base64 PNG, resizing if needed."""
+    """Convert numpy image to base64 PNG for LLM metadata inspection."""
     import cv2
 
     h, w = image.shape[:2]
@@ -31,162 +31,139 @@ def _image_to_base64(image: np.ndarray, max_dim: int = 1600) -> str:
     return base64.b64encode(buf).decode("utf-8")
 
 
-def _as_float(value) -> float | None:
-    """Convert a parsed point coordinate to float."""
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
 class CurveExtractor(BaseExtractor):
-    """Extract curve data from figures using multimodal LLM."""
+    """Extract curve data without using LLM-generated x-y values."""
 
     def extract(self, context: ExtractionContext) -> list[CurveData]:
-        """Process all figures in the context, digitize curves via API."""
+        """Process target figures with metadata LLM + vector/raster digitization."""
         all_curves: list[CurveData] = []
+        figures_to_process = self._select_target_figures(context)
+        logger.info(f"  Processing {len(figures_to_process)} figures for curve extraction...")
 
-        # Group figures by (pdf_type, page_number) to avoid rendering same page twice
-        pages_to_process: dict[tuple[str, int], list[dict]] = {}
-        for fig in context.figure_index:
-            for ptype in fig.get("plot_types", []):
-                if ptype in TARGET_TYPES:
-                    key = (fig["pdf_type"], fig["page_number"])
-                    if key not in pages_to_process:
-                        pages_to_process[key] = []
-                    pages_to_process[key].append({**fig, "_target_type": ptype})
-
-        logger.info(f"  Processing {len(pages_to_process)} pages for curve extraction...")
-
-        for (pdf_type, page_num), figures in pages_to_process.items():
-            pdf_path = context.main_pdf if pdf_type == "main" else context.si_pdf
+        output_root = context.folder / self.config.output_dir_name
+        for fig in figures_to_process:
+            pdf_path = context.main_pdf if fig["pdf_type"] == "main" else context.si_pdf
             if not pdf_path:
                 continue
-
-            # Render page image
+            page_num = int(fig.get("page_number", 0))
             image = self._render_page(pdf_path, page_num)
             if image is None:
+                context.add_warning(f"Could not render {pdf_path.name} page {page_num}")
                 continue
 
-            image_b64 = _image_to_base64(image, self.config.max_image_dim)
+            plot_type = fig["_target_type"]
+            metadata = self._read_figure_metadata(image, fig, plot_type)
+            logger.info(f"    {metadata.figure_id} ({metadata.plot_type}) from {pdf_path.name} p{page_num}")
 
-            for fig in figures:
-                plot_type = fig["_target_type"]
-                caption = fig.get("caption", "")
-                sample_labels = fig.get("sample_labels", [])
+            result = digitize_plot_image(
+                page_image=image,
+                metadata=metadata,
+                pdf_name=pdf_path.name,
+                page_num=page_num,
+                output_root=output_root,
+                min_points=self.config.min_curve_points,
+            )
 
-                logger.info(f"    {fig['figure_id']} ({plot_type}) from {pdf_path.name} p{page_num}")
+            for warning in result.warnings:
+                context.add_warning(warning)
 
-                curves = self._digitize_figure(
-                    image_b64, plot_type, caption, sample_labels,
-                    pdf_path.name, page_num, fig["figure_id"],
+            for curve in result.curves:
+                if len(curve.x) < 3:
+                    context.add_warning(f"Curve {curve.label} has only {len(curve.x)} points, skipped")
+                    continue
+                all_curves.append(curve)
+                context.add_evidence(
+                    f"{curve.label}.curve",
+                    f"{len(curve.x)} points",
+                    curve.extraction_method,
+                    f"{curve.source_pdf}:p{curve.source_page}:{curve.source_figure}",
+                    confidence=curve.confidence,
+                    raw_text=curve.caption,
                 )
-
-                for curve in curves:
-                    point_count = len(curve.x)
-                    if point_count < 3:
-                        context.add_warning(f"Curve {curve.label} has only {point_count} points, skipped")
-                        continue
-                    if point_count < self.config.min_curve_points:
-                        context.add_warning(
-                            f"Curve {curve.label} has {point_count} points; "
-                            f"below target {self.config.min_curve_points}"
-                        )
-                    all_curves.append(curve)
-                    logger.info(f"      Extracted: {curve.label} ({point_count} points)")
+                logger.info(
+                    "      Extracted: %s (%s points, %s, %s/%s)",
+                    curve.label,
+                    len(curve.x),
+                    curve.confidence,
+                    curve.x_scale,
+                    curve.y_scale,
+                )
 
         logger.info(f"  Total curves extracted: {len(all_curves)}")
         return all_curves
 
-    def _render_page(self, pdf_path: Path, page_num: int) -> np.ndarray | None:
-        """Render a PDF page to numpy array."""
+    def _select_target_figures(self, context: ExtractionContext) -> list[dict]:
+        """Use text-derived figure index to select candidate figures."""
+        selected: list[dict] = []
+        for fig in context.figure_index:
+            for ptype in fig.get("plot_types", []):
+                normalized = "xrd" if ptype == "waxs" else ptype
+                if normalized in TARGET_TYPES:
+                    selected.append({**fig, "_target_type": normalized})
+        return selected
+
+    def _read_figure_metadata(self, image: np.ndarray, fig: dict, plot_type: str) -> FigureMetadata:
+        """Ask the LLM for metadata only; never accept x-y data from the LLM."""
+        prompt = build_curve_metadata_prompt(
+            plot_type=plot_type,
+            figure_caption=fig.get("caption", ""),
+            sample_labels=fig.get("sample_labels", []),
+        )
+        parsed = None
         try:
+            response = self.llm.send_image(_image_to_base64(image, self.config.max_image_dim), prompt, system=SYSTEM_PROMPT)
+            parsed = self.llm.parse_json_response(response)
+        except Exception as exc:
+            logger.warning("LLM metadata read failed for %s: %s", fig.get("figure_id", "figure"), exc)
+
+        if not isinstance(parsed, dict):
+            parsed = {}
+
+        if "curves" in parsed or "data" in parsed:
+            logger.warning("Ignoring prohibited LLM curve data for %s", fig.get("figure_id", "figure"))
+
+        labels = parsed.get("curve_labels") or parsed.get("sample_labels") or fig.get("sample_labels", [])
+        if not isinstance(labels, list):
+            labels = []
+
+        return FigureMetadata(
+            figure_id=str(parsed.get("figure_id") or fig.get("figure_id", "Figure")),
+            plot_type=str(parsed.get("plot_type") or plot_type),
+            caption=str(parsed.get("caption") or fig.get("caption", "")),
+            x_label=str(parsed.get("x_axis", {}).get("label", "")) if isinstance(parsed.get("x_axis"), dict) else "",
+            y_label=str(parsed.get("y_axis", {}).get("label", "")) if isinstance(parsed.get("y_axis"), dict) else "",
+            x_unit=str(parsed.get("x_axis", {}).get("unit", "")) if isinstance(parsed.get("x_axis"), dict) else "",
+            y_unit=str(parsed.get("y_axis", {}).get("unit", "")) if isinstance(parsed.get("y_axis"), dict) else "",
+            labels=[str(label) for label in labels],
+            legend=parsed.get("legend", []) if isinstance(parsed.get("legend"), list) else [],
+            axis_hints={
+                "x": parsed.get("x_axis", {}) if isinstance(parsed.get("x_axis"), dict) else {},
+                "y": parsed.get("y_axis", {}) if isinstance(parsed.get("y_axis"), dict) else {},
+            },
+        )
+
+    def _render_page(self, pdf_path: Path, page_num: int) -> np.ndarray | None:
+        """Render a PDF page to a BGR numpy image."""
+        try:
+            import cv2
             import fitz
+
             doc = fitz.open(str(pdf_path))
             if page_num < 1 or page_num > len(doc):
                 doc.close()
                 return None
-            page = doc[page_num - 1]  # 0-indexed
+            page = doc[page_num - 1]
             zoom = self.config.render_dpi / 72.0
             mat = fitz.Matrix(zoom, zoom)
             pix = page.get_pixmap(matrix=mat)
             img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n)
             doc.close()
 
-            import cv2
             if pix.n == 4:
-                img = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
-            elif pix.n == 3:
-                img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-            return img
-        except Exception as e:
-            logger.warning(f"Failed to render {pdf_path.name} p{page_num}: {e}")
+                return cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
+            if pix.n == 3:
+                return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+            return cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        except Exception as exc:
+            logger.warning("Failed to render %s p%s: %s", pdf_path.name, page_num, exc)
             return None
-
-    def _digitize_figure(
-        self,
-        image_b64: str,
-        plot_type: str,
-        caption: str,
-        sample_labels: list[str],
-        pdf_name: str,
-        page_num: int,
-        figure_id: str,
-    ) -> list[CurveData]:
-        """Digitize curves from one figure via multimodal API."""
-        prompt = build_curve_prompt(
-            plot_type=plot_type,
-            figure_caption=caption,
-            sample_labels=sample_labels,
-            min_points=self.config.min_curve_points,
-        )
-
-        response = self.llm.send_image(image_b64, prompt, system=SYSTEM_PROMPT)
-        parsed = self.llm.parse_json_response(response)
-
-        if not parsed or "curves" not in parsed:
-            return []
-
-        curves = []
-        for curve_data in parsed["curves"]:
-            data_points = curve_data.get("data", [])
-            x_vals = []
-            y_vals = []
-            for point in data_points:
-                x = _as_float(point.get("x"))
-                y = _as_float(point.get("y"))
-                if x is None or y is None:
-                    continue
-                x_vals.append(x)
-                y_vals.append(y)
-
-            if not x_vals:
-                continue
-
-            point_count = len(x_vals)
-            if point_count >= self.config.min_curve_points:
-                confidence = "high"
-            elif point_count >= max(10, self.config.min_curve_points // 2):
-                confidence = "medium"
-            else:
-                confidence = "low"
-
-            curves.append(CurveData(
-                sample_id=curve_data.get("name", "unknown"),
-                curve_type=plot_type,
-                x=x_vals,
-                y=y_vals,
-                x_label=parsed.get("x_label", ""),
-                y_label=parsed.get("y_label", ""),
-                x_unit=parsed.get("x_unit", ""),
-                y_unit=parsed.get("y_unit", ""),
-                source_figure=figure_id,
-                source_page=page_num,
-                source_pdf=pdf_name,
-                confidence=confidence,
-                label=curve_data.get("name", ""),
-            ))
-
-        return curves

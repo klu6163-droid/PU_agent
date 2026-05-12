@@ -1,9 +1,11 @@
 from pathlib import Path
 
 from agent.config import load_config
+from agent.extractors.curve_digitizer import fit_axis_model, map_pixel_to_value
 from agent.llm_client import LLMClient
 from agent.output.schemas import CurveData, ExtractionResult
 from agent.output.writer import write_results
+from agent.prompts.curve_digitize import build_curve_metadata_prompt
 from agent.utils_pdf import classify_pdf
 
 
@@ -96,3 +98,65 @@ def test_write_results_keeps_multiple_curves_for_same_sample_and_type(tmp_path: 
         "SampleA_stress_strain_Figure_1_p3_run1",
         "SampleA_stress_strain_Figure_S2_p7_run2",
     }
+
+
+def test_axis_model_selects_log_from_tick_fit():
+    ticks = [
+        {"pixel": 0.0, "value": 1.0},
+        {"pixel": 50.0, "value": 10.0},
+        {"pixel": 100.0, "value": 100.0},
+    ]
+
+    calibration = fit_axis_model(ticks, "y")
+
+    assert calibration["scale_type"] == "log"
+    assert calibration["r2_log"] > calibration["r2_linear"]
+    assert round(map_pixel_to_value(50.0, calibration), 6) == 10.0
+
+
+def test_axis_model_detects_reversed_ftir_axis():
+    ticks = [
+        {"pixel": 0.0, "value": 4000.0},
+        {"pixel": 100.0, "value": 400.0},
+    ]
+
+    calibration = fit_axis_model(ticks, "x")
+
+    assert calibration["scale_type"] == "linear"
+    assert calibration["reversed"] is True
+    assert map_pixel_to_value(0.0, calibration) > map_pixel_to_value(100.0, calibration)
+
+
+def test_curve_metadata_prompt_forbids_llm_xy_data():
+    prompt = build_curve_metadata_prompt("stress_strain", "Figure 3a. Stress-strain curves.", ["PU-1"])
+
+    assert "Do not output curve x-y data" in prompt
+    assert '"curves"' not in prompt
+    assert '"data"' not in prompt
+
+
+def test_curve_csv_contains_point_provenance(tmp_path: Path):
+    output_dir = tmp_path / "agent_output"
+    result = ExtractionResult(
+        folder_name="PU_TEST",
+        curves=[
+            CurveData(
+                sample_id="SampleA",
+                curve_type="stress_strain",
+                x=[0.0],
+                y=[1.0],
+                source_pdf="paper.pdf",
+                source_page=3,
+                source_figure="Figure 3a",
+                caption="Stress-strain curves",
+                extraction_method="opencv_raster_digitization",
+                confidence="medium",
+            )
+        ],
+    )
+
+    write_results(output_dir, result)
+
+    csv_text = next((output_dir / "curves").glob("*.csv")).read_text(encoding="utf-8")
+    assert "source_pdf,source_page,source_figure" in csv_text
+    assert "paper.pdf,3,Figure 3a" in csv_text
